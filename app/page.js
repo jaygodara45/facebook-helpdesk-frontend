@@ -2,7 +2,7 @@ import Link from 'next/link';
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-[#004F9E] relative">
+    <main className="min-h-screen bg-[#1E4D91] relative">
       <div className="absolute top-4 right-4 my-3">
         <Link 
           href="/login" 

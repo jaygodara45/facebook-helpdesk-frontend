@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { HomeIcon } from '@heroicons/react/24/solid';
-import { BASE_BACKEND_URL } from '@/config/constants';
+import { BASE_BACKEND_URL, BASE_FRONTEND_URL } from '@/config/constants';
+import Cookies from 'js-cookie';
 
 export default function FacebookOAuth() {
   const [response, setResponse] = useState(null);
@@ -26,7 +27,7 @@ export default function FacebookOAuth() {
 
     const connectFacebookPage = async () => {
       try {
-        const token = localStorage.getItem('token');
+        const token = Cookies.get('token');
         const response = await fetch(`${BASE_BACKEND_URL}/facebook/connect`, {
           method: 'POST',
           headers: {
@@ -35,7 +36,7 @@ export default function FacebookOAuth() {
           },
           body: JSON.stringify({
             code: code,
-            redirect_uri: 'http://localhost:3000/fb_oauth/'
+            redirect_uri: `${BASE_FRONTEND_URL}/fb_oauth/`
           })
         });
 
@@ -62,7 +63,6 @@ export default function FacebookOAuth() {
         setCountdown((prev) => {
           if (prev <= 1) {
             clearInterval(timer);
-            router.push('/home');
             return 0;
           }
           return prev - 1;
@@ -71,7 +71,14 @@ export default function FacebookOAuth() {
 
       return () => clearInterval(timer);
     }
-  }, [response, error, router]);
+  }, [response, error]);
+
+  // Separate useEffect for navigation
+  useEffect(() => {
+    if (countdown === 0) {
+      router.push('/home');
+    }
+  }, [countdown, router]);
 
   // Only render content after component is mounted on client
   if (!isMounted) {
@@ -79,15 +86,11 @@ export default function FacebookOAuth() {
   }
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#004F9E] flex items-center justify-center">
-        <div className="text-xl text-white">Connecting your Facebook page...</div>
-      </div>
-    );
+    return null;
   }
 
   return (
-    <div className="min-h-screen bg-[#004F9E] flex items-center justify-center p-4">
+    <div className="min-h-screen bg-[#1E4D91] flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-md p-8 max-w-3xl w-full text-center">
         <h1 className="text-2xl font-bold text-gray-900 mb-4">Facebook Page Connection Status</h1>
         {error ? (

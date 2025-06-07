@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_BACKEND_URL } from '@/config/constants';
+import Cookies from 'js-cookie';
 
 export default function Register() {
   const [formData, setFormData] = useState({
@@ -50,7 +51,7 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#004F9E]">
+    <div className="min-h-screen flex items-center justify-center bg-[#1E4D91]">
       <div className="bg-white p-8 rounded-xl shadow-lg w-[400px]">
         <h1 className="text-xl font-medium text-center text-gray-900 p-4">Create account</h1>
         

@@ -2,9 +2,10 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { MdRefresh, MdMenu, MdSend, MdInbox, MdPeople, MdSettings, MdLogout, MdHome, MdLock } from 'react-icons/md';
+import { MdRefresh, MdMenu, MdSend, MdInbox, MdPeople, MdSettings, MdLogout, MdHome, MdLock, MdClose } from 'react-icons/md';
 import { BsFillChatLeftTextFill } from 'react-icons/bs';
 import { BASE_BACKEND_URL } from '@/config/constants';
+import Cookies from 'js-cookie';
 
 function getTimeSince(date) {
   const now = new Date();
@@ -26,12 +27,22 @@ export default function Chat() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [messageInput, setMessageInput] = useState('');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isProfileVisible, setIsProfileVisible] = useState(true);
+  const [webSocket, setWebSocket] = useState(null);
   const messagesEndRef = useRef(null);
+  const inputRef = useRef(null);
   const router = useRouter();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
+
+  useEffect(() => {
+    if (selectedChat) {
+      inputRef.current?.focus();
+    }
+  }, [selectedChat]);
 
   useEffect(() => {
     if (selectedChat?.messages?.length > 0) {
@@ -40,13 +51,73 @@ export default function Chat() {
   }, [selectedChat?.messages]);
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('token_type');
+    Cookies.remove('token');
+    Cookies.remove('token_type');
     router.push('/login');
   };
 
+  // Add WebSocket connection function
+  const connectWebSocket = (chatId) => {
+    const token = Cookies.get('token');
+    if (!token) return null;
+
+    const ws = new WebSocket(`ws://${BASE_BACKEND_URL.replace('http://', '')}/api/messenger/ws/${chatId}`);
+    
+    ws.onopen = () => {
+      console.log('Connected to chat websocket');
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'new_message') {
+        const newMessage = data.data;
+        // Only add the message if it doesn't already exist in the chat
+        setSelectedChat(prevChat => {
+          const messageExists = prevChat.messages.some(msg => msg.id === newMessage.id);
+          if (messageExists) {
+            return prevChat;
+          }
+          return {
+            ...prevChat,
+            messages: [...prevChat.messages, newMessage]
+          };
+        });
+        
+        // Update the message in chats list
+        setChats(prevChats => prevChats.map(chat => {
+          if (chat.id === chatId) {
+            const messageExists = chat.messages.some(msg => msg.id === newMessage.id);
+            if (messageExists) {
+              return chat;
+            }
+            return { ...chat, messages: [...chat.messages, newMessage] };
+          }
+          return chat;
+        }));
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('Disconnected from chat websocket');
+      // Attempt to reconnect after 3 seconds
+      setTimeout(() => {
+        if (chatId) {
+          const newWs = connectWebSocket(chatId);
+          setWebSocket(newWs);
+        }
+      }, 3000);
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+    
+    return ws;
+  };
+
+  // Update useEffect to use WebSocket instead of polling
   useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = Cookies.get('token');
     if (!token) {
       router.push('/login');
       return;
@@ -98,15 +169,9 @@ export default function Chat() {
         const data = await response.json();
         setFbConnection(data);
 
-        // If connected, fetch chats initially and set up interval
+        // If connected, fetch chats initially
         if (data.connected === 1) {
           await fetchChats();
-          
-          // Set up interval to fetch chats every second
-          const intervalId = setInterval(fetchChats, 1000);
-          
-          // Clean up interval on unmount
-          return () => clearInterval(intervalId);
         }
       } catch (error) {
         console.error('Error:', error);
@@ -119,10 +184,32 @@ export default function Chat() {
     fetchFbConnection();
   }, [router]);
 
+  // Add useEffect for WebSocket connection when selected chat changes
+  useEffect(() => {
+    if (selectedChat?.id) {
+      // Close existing WebSocket connection if any
+      if (webSocket) {
+        webSocket.close();
+      }
+      
+      // Create new WebSocket connection
+      const ws = connectWebSocket(selectedChat.id);
+      setWebSocket(ws);
+      
+      // Cleanup on unmount or when selected chat changes
+      return () => {
+        if (ws) {
+          ws.close();
+        }
+      };
+    }
+  }, [selectedChat?.id]);
+
+  // Update handleSendMessage to handle WebSocket connection state
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !selectedChat) return;
 
-    const token = localStorage.getItem('token');
+    const token = Cookies.get('token');
     try {
       const response = await fetch(`${BASE_BACKEND_URL}/api/messenger/chats/${selectedChat.id}/messages`, {
         method: 'POST',
@@ -139,27 +226,12 @@ export default function Chat() {
         throw new Error('Failed to send message');
       }
 
-      const newMessage = await response.json();
-      
-      // Update the chat with the new message
-      setSelectedChat(prevChat => ({
-        ...prevChat,
-        messages: [...prevChat.messages, {
-          ...newMessage,
-          message_type: 'outgoing',
-          timestamp: new Date().toISOString()
-        }]
-      }));
-
-      // Update the message in chats list
-      setChats(prevChats => prevChats.map(chat => 
-        chat.id === selectedChat.id 
-          ? { ...chat, messages: [...chat.messages, newMessage] }
-          : chat
-      ));
-
-      // Clear the input
+      // Clear the input immediately after successful send
       setMessageInput('');
+      
+      // Don't update the UI here - wait for the WebSocket to deliver the message
+      // This prevents duplicate messages
+
     } catch (error) {
       console.error('Error sending message:', error);
       setError('Failed to send message. Please try again.');
@@ -173,12 +245,13 @@ export default function Chat() {
     }
   };
 
+  // Add this function to handle profile visibility toggle
+  const toggleProfile = () => {
+    setIsProfileVisible(!isProfileVisible);
+  };
+
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="text-2xl text-gray-600">Loading...</div>
-      </div>
-    );
+    return null;
   }
 
   if (!fbConnection?.connected) {
@@ -257,10 +330,19 @@ export default function Chat() {
         {/* Tall Bar */}
         <div className="w-[5%] bg-[#1E4D91] flex flex-col items-center py-6 text-white">
           <div className="flex flex-col items-center space-y-8">
-            <button className="p-3 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer">
-              <BsFillChatLeftTextFill size={24} />
+            <button 
+              onClick={() => router.push('/home')}
+              className="p-3 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer group relative"
+            >
+              <MdHome size={28} />
+              <span className="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                Go to Home
+              </span>
             </button>
             <button className="p-3 rounded-lg bg-blue-700 transition-colors cursor-pointer">
+              <BsFillChatLeftTextFill size={24} />
+            </button>
+            <button className="p-3 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer">
               <MdInbox size={24} />
             </button>
             <button className="p-3 rounded-lg hover:bg-blue-700 transition-colors cursor-pointer">
@@ -284,15 +366,17 @@ export default function Chat() {
         </div>
 
         {/* Sidebar - Chat List */}
-        <div className="w-[20%] bg-white border-r border-gray-200">
+        <div className={`${isSidebarCollapsed ? 'w-[4%]' : 'w-[20%]'} bg-white border-r border-gray-200 transition-all duration-75`}>
           <div className="p-4 border-b border-gray-200 flex justify-between items-center">
             <div className='flex'>
-              <MdMenu className='text-gray-600 text-2xl mt-1'/>
-              <h2 className="text-xl font-semibold text-gray-900 ml-3">Conversations</h2>
+              <button onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)} className="text-gray-600 hover:text-gray-800 transition-colors cursor-pointer">
+                <MdMenu className='text-2xl mt-1 cursor-pointer'/>
+              </button>
+              <h2 className={`text-xl font-semibold text-gray-900 ml-3 ${isSidebarCollapsed ? 'hidden' : ''}`}>Conversations</h2>
             </div>
-            <MdRefresh className='text-gray-600 text-2xl'/>
+            <MdRefresh className={`text-gray-600 text-2xl ${isSidebarCollapsed ? 'hidden' : ''} cursor-pointer hover:text-gray-800 active:rotate-60 transition-transform duration-100`}/>
           </div>
-          <div className="overflow-y-auto h-[calc(100vh-4rem)]">
+          <div className={`overflow-y-auto h-[calc(100vh-4rem)] ${isSidebarCollapsed ? 'hidden' : ''}`}>
             {chats.map((chat) => {
               const lastMessage = chat.messages[chat.messages.length - 1];
               const timeSince = lastMessage ? getTimeSince(new Date(lastMessage.timestamp)) : '';
@@ -341,7 +425,7 @@ export default function Chat() {
         </div>
 
         {/* Main Chat Area */}
-        <div className="w-[55%] flex flex-col">
+        <div className={`${isSidebarCollapsed ? (isProfileVisible ? 'w-[71%]' : 'w-[91%]') : (isProfileVisible ? 'w-[55%]' : 'w-[75%]')} flex flex-col transition-all duration-75`}>
           {selectedChat ? (
             <>
               {/* Chat Header */}
@@ -352,24 +436,20 @@ export default function Chat() {
                       
                     </div>
                     <div>
-                      <h2 className="text-2xl font-semibold text-gray-900">
+                      <h2 
+                        className="text-2xl font-medium text-gray-900 cursor-pointer hover:bg-gray-100 px-2 py-1 rounded-md transition-colors duration-75"
+                        onClick={toggleProfile}
+                      >
                         {selectedChat.fb_user_name}
                       </h2>
                     </div>
-                  </div>
-                  <div
-                    onClick={() => router.push('/home')}
-                    className="flex gap-3 cursor-pointer hover:bg-gray-100 p-2 rounded-md"
-                  >
-                    <MdHome size={24} className="text-gray-600 hover:text-gray-800 transition-colors" />
-                    <p className="text-gray-800 text-md font-medium">Home</p>
                   </div>
                 </div>
               </div>
 
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
-                <div className="space-y-4">
+              <div className="flex-1 overflow-y-auto p-4 bg-gray-50 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full">
+                <div className="space-y-2">
                   {selectedChat.messages.map((message, index) => {
                     const isLastIncoming =
                       message.message_type === 'incoming' &&
@@ -386,18 +466,18 @@ export default function Chat() {
                     return (
                       <div
                         key={message.id}
-                        className={`flex ${message.message_type === 'outgoing' ? 'justify-end' : 'justify-start'} items-end space-x-2`}
+                        className={`flex ${message.message_type === 'outgoing' ? 'justify-end' : 'justify-start'} items-end`}
                       >
                         {message.message_type === 'incoming' && (
-                          <div className={`flex-shrink-0 ${!isLastIncoming ? 'invisible' : ''} w-10 h-10 mb-6`}>
+                          <div className={`flex-shrink-0 ${!isLastIncoming ? 'invisible' : 'mb-5'} w-10 h-10 mr-2 `}>
                             <img
                               src="https://www.gravatar.com/avatar/2c7d99fe281ecd3bcd65ab915bac6dd5?s=250"
                               alt="Profile"
-                              className="w-10 h-10 rounded-full"
+                              className="w-10 h-10 rounded-full "
                             />
                           </div>
                         )}
-                        <div className="max-w-[70%]">
+                        <div className={`max-w-[70%] ${message.message_type === 'outgoing' ? 'ml-12' : 'mr-12'}`}>
                           <div
                             className={`px-3 py-3 rounded-md text-sm border border-gray-100 shadow-sm ${
                               message.message_type === 'outgoing'
@@ -409,7 +489,7 @@ export default function Chat() {
                           </div>
                           {(isLastIncoming || isLastOutgoing) && (
                             <p
-                              className={`font-medium text-xs text-gray-700 mt-2 opacity-90 ${
+                              className={`font-medium text-xs text-gray-700 mt-1 opacity-90 ${
                                 message.message_type === 'outgoing' ? 'text-right' : 'text-left'
                               }`}
                             >
@@ -425,7 +505,7 @@ export default function Chat() {
                           )}
                         </div>
                         {message.message_type === 'outgoing' && (
-                          <div className={`flex-shrink-0 ${!isLastOutgoing ? 'invisible' : ''} w-10 h-10 mb-6`}>
+                          <div className={`flex-shrink-0 ${!isLastOutgoing ? 'invisible' : 'mb-5'} w-10 h-10 ml-2`}>
                             <img
                               src="https://robohash.org/mail@ashallendesign.co.uk"
                               alt="Profile"
@@ -446,6 +526,7 @@ export default function Chat() {
                 <div className="flex space-x-4 text-sm font-medium">
                   <div className="flex-1 relative">
                     <input
+                      ref={inputRef}
                       type="text"
                       value={messageInput}
                       onChange={(e) => setMessageInput(e.target.value)}
@@ -476,16 +557,22 @@ export default function Chat() {
         </div>
 
         {/* Profile Section */}
-        <div className="w-[20%] bg-gray-50 border-l border-gray-200">
+        <div className={`${isProfileVisible ? 'w-[20%]' : 'w-[0%] overflow-hidden'} bg-gray-50 border-l border-gray-200 transition-all duration-75`}>
           <div className="h-screen flex flex-col">
-            {selectedChat ? (
+            {selectedChat && isProfileVisible ? (
               <>
                 {/* Top Profile Section - 1/3 height */}
-                <div className="h-2/5 bg-white p-10 border-l border-gray-200">
+                <div className="h-7/20 bg-white p-10 border-l border-gray-200 relative">
+                  <button 
+                    onClick={toggleProfile}
+                    className="absolute top-4 right-4 p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full cursor-pointer"
+                  >
+                    <MdClose size={24} />
+                  </button>
                   <div className="space-y-4">
                     {/* Profile Header */}
                     <div className="flex flex-col items-center text-center">
-                      <div className="w-15 h-15 rounded-full bg-gray-300 flex items-center justify-center mb-3 mt-5">
+                      <div className="w-18 h-18 rounded-full bg-gray-300 flex items-center justify-center mb-3 mt-5 border-3 border-green-500">
                         <img
                           src={"https://www.gravatar.com/avatar/2c7d99fe281ecd3bcd65ab915bac6dd5?s=250"}
                           alt={selectedChat.fb_user_name}
@@ -493,21 +580,21 @@ export default function Chat() {
                         />
                       </div>
                       <h3 className="text-lg font-medium text-gray-900">{selectedChat.fb_user_name}</h3>
-                      <p className="text-xs text-gray-500 flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-gray-300 font-medium"></span>
-                        Offline
+                      <p className="text-xs text-gray-700 font-medium flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-green-600 font-medium"></span>
+                        Online
                       </p>
                     </div>
 
                     {/* Action Buttons */}
                     <div className="flex gap-4 justify-center mt-6">
-                      <button className="text-sm font-medium flex items-center gap-2 px-4 py-1 rounded-lg border border-gray-400 bg-white text-gray-700 hover:bg-gray-50">
+                      <button className="text-sm font-medium flex items-center gap-2 px-4 py-1 rounded-lg border border-gray-400 bg-white text-gray-700 hover:bg-gray-50 cursor-pointer hover:bg-green-500 hover:text-white active:bg-green-400 active:text-white">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                         </svg>
                         Call
                       </button>
-                      <button className="text-sm font-medium flex items-center gap-2 px-4 py-1 rounded-lg border border-gray-400 bg-white text-gray-900 hover:bg-gray-50">
+                      <button className="text-sm font-medium flex items-center gap-2 px-4 py-1 rounded-lg border border-gray-400 bg-white text-gray-900 hover:bg-gray-50 cursor-pointer hover:bg-green-500 hover:text-white active:bg-green-400 active:text-white">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                         </svg>
@@ -518,7 +605,7 @@ export default function Chat() {
                 </div>
 
                 {/* Bottom Profile Section - 2/3 height */}
-                <div className="h-3/5 bg-slate-200 p-3">
+                <div className="h-13/20 bg-slate-200 p-3">
                   {/* Customer Details Card */}
                   <div className="bg-white rounded-md p-3 shadow-md text-sm">
                     <h4 className="text-base font-semibold text-gray-900 mb-4">Customer details</h4>
@@ -535,7 +622,7 @@ export default function Chat() {
                         <span className="text-gray-600">Last Name</span>
                         <span className="text-gray-900 font-medium">{selectedChat.fb_user_name.split(' ').slice(1).join(' ') || '-'}</span>
                       </div>
-                      <button className="text-blue-600 text-xs font-medium mt-1">
+                      <button className="text-blue-800 text-xs font-medium mt-1 cursor-pointer hover:text-blue-700 active:text-blue-500">
                         View more details
                       </button>
                     </div>

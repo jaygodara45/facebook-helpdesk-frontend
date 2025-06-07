@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_BACKEND_URL } from '@/config/constants';
+import Cookies from 'js-cookie';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -31,9 +32,10 @@ export default function Login() {
         throw new Error(data.message || 'Login failed');
       }
 
-      // Save the token
-      localStorage.setItem('token', data.access_token);
-      localStorage.setItem('token_type', data.token_type);
+      // Save the token in cookies
+      const expiryDays = rememberMe ? 30 : 1;
+      Cookies.set('token', data.access_token, { expires: expiryDays });
+      Cookies.set('token_type', data.token_type, { expires: expiryDays });
 
       // Redirect to home page
       router.push('/home');
@@ -43,7 +45,7 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#004F9E]">
+    <div className="min-h-screen flex items-center justify-center bg-[#1E4D91]">
       <div className="bg-white p-8 rounded-xl shadow-lg w-[400px]">
         <h1 className="text-xl font-medium text-center text-gray-900 p-6">Login to your account</h1>
 
