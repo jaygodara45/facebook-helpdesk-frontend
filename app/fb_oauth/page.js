@@ -79,15 +79,11 @@ export default function FacebookOAuth() {
   }
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#004F9E] flex items-center justify-center">
-        <div className="text-xl text-white">Connecting your Facebook page...</div>
-      </div>
-    );
+    return null;
   }
 
   return (
-    <div className="min-h-screen bg-[#004F9E] flex items-center justify-center p-4">
+    <div className="min-h-screen bg-[#1E4D91] flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-md p-8 max-w-3xl w-full text-center">
         <h1 className="text-2xl font-bold text-gray-900 mb-4">Facebook Page Connection Status</h1>
         {error ? (
