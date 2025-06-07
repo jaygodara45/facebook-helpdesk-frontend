@@ -24,5 +24,5 @@ export function middleware(request) {
 }
 
 export const config = {
-  matcher: [...protectedRoutes, ...authRoutes],
+  matcher: ['/chat', '/home', '/fb_oauth', '/login', '/register', '/']
 }; 
