@@ -29,6 +29,7 @@ export default function Chat() {
   const [messageInput, setMessageInput] = useState('');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isProfileVisible, setIsProfileVisible] = useState(true);
+  const [webSocket, setWebSocket] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const router = useRouter();
@@ -55,6 +56,66 @@ export default function Chat() {
     router.push('/login');
   };
 
+  // Add WebSocket connection function
+  const connectWebSocket = (chatId) => {
+    const token = Cookies.get('token');
+    if (!token) return null;
+
+    const ws = new WebSocket(`ws://${BASE_BACKEND_URL.replace('http://', '')}/api/messenger/ws/${chatId}`);
+    
+    ws.onopen = () => {
+      console.log('Connected to chat websocket');
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'new_message') {
+        const newMessage = data.data;
+        // Only add the message if it doesn't already exist in the chat
+        setSelectedChat(prevChat => {
+          const messageExists = prevChat.messages.some(msg => msg.id === newMessage.id);
+          if (messageExists) {
+            return prevChat;
+          }
+          return {
+            ...prevChat,
+            messages: [...prevChat.messages, newMessage]
+          };
+        });
+        
+        // Update the message in chats list
+        setChats(prevChats => prevChats.map(chat => {
+          if (chat.id === chatId) {
+            const messageExists = chat.messages.some(msg => msg.id === newMessage.id);
+            if (messageExists) {
+              return chat;
+            }
+            return { ...chat, messages: [...chat.messages, newMessage] };
+          }
+          return chat;
+        }));
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('Disconnected from chat websocket');
+      // Attempt to reconnect after 3 seconds
+      setTimeout(() => {
+        if (chatId) {
+          const newWs = connectWebSocket(chatId);
+          setWebSocket(newWs);
+        }
+      }, 3000);
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+    
+    return ws;
+  };
+
+  // Update useEffect to use WebSocket instead of polling
   useEffect(() => {
     const token = Cookies.get('token');
     if (!token) {
@@ -108,15 +169,9 @@ export default function Chat() {
         const data = await response.json();
         setFbConnection(data);
 
-        // If connected, fetch chats initially and set up interval
+        // If connected, fetch chats initially
         if (data.connected === 1) {
           await fetchChats();
-          
-          // Set up interval to fetch chats every second
-          const intervalId = setInterval(fetchChats, 1000);
-          
-          // Clean up interval on unmount
-          return () => clearInterval(intervalId);
         }
       } catch (error) {
         console.error('Error:', error);
@@ -129,6 +184,28 @@ export default function Chat() {
     fetchFbConnection();
   }, [router]);
 
+  // Add useEffect for WebSocket connection when selected chat changes
+  useEffect(() => {
+    if (selectedChat?.id) {
+      // Close existing WebSocket connection if any
+      if (webSocket) {
+        webSocket.close();
+      }
+      
+      // Create new WebSocket connection
+      const ws = connectWebSocket(selectedChat.id);
+      setWebSocket(ws);
+      
+      // Cleanup on unmount or when selected chat changes
+      return () => {
+        if (ws) {
+          ws.close();
+        }
+      };
+    }
+  }, [selectedChat?.id]);
+
+  // Update handleSendMessage to handle WebSocket connection state
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !selectedChat) return;
 
@@ -149,27 +226,12 @@ export default function Chat() {
         throw new Error('Failed to send message');
       }
 
-      const newMessage = await response.json();
-      
-      // Update the chat with the new message
-      setSelectedChat(prevChat => ({
-        ...prevChat,
-        messages: [...prevChat.messages, {
-          ...newMessage,
-          message_type: 'outgoing',
-          timestamp: new Date().toISOString()
-        }]
-      }));
-
-      // Update the message in chats list
-      setChats(prevChats => prevChats.map(chat => 
-        chat.id === selectedChat.id 
-          ? { ...chat, messages: [...chat.messages, newMessage] }
-          : chat
-      ));
-
-      // Clear the input
+      // Clear the input immediately after successful send
       setMessageInput('');
+      
+      // Don't update the UI here - wait for the WebSocket to deliver the message
+      // This prevents duplicate messages
+
     } catch (error) {
       console.error('Error sending message:', error);
       setError('Failed to send message. Please try again.');
